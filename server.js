@@ -3,6 +3,7 @@
 // dan mencatat metadata media ke tabel Supabase.
 
 const http = require("http");
+const path = require("path");
 
 const express = require("express");
 const cors = require("cors");
@@ -381,6 +382,14 @@ app.post("/devices/:id/command", (req, res) => {
   console.log(`Mengirim perintah '${cmd}' ke ${id}`);
 
   res.json({ ok: true, sentTo: id, cmd });
+});
+
+// ── Serve frontend React build ────────────────────────────────────────────────
+const FRONTEND_DIST = path.join(__dirname, "../frontend/dist");
+app.use(express.static(FRONTEND_DIST));
+// SPA fallback — semua route yang tidak dikenal dikembalikan ke index.html
+app.get("/{*path}", (req, res) => {
+  res.sendFile(path.join(FRONTEND_DIST, "index.html"));
 });
 
 app.listen(PORT, () => {
