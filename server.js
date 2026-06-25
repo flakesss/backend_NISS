@@ -145,6 +145,123 @@ app.get("/recordings/:id/url", async (req, res) => {
   res.json({ url: data.signedUrl });
 });
 
+// ── Stream video/foto langsung dari Supabase Storage melalui backend ──────────
+// Untuk format yang tidak didukung browser (AVI, MKV, MOV),
+// backend akan otomatis transcode ke MP4 via ffmpeg jika tersedia.
+app.get("/recordings/:id/stream", async (req, res) => {
+  const { spawn } = require("child_process");
+
+  // 1. Ambil storage_path dari DB
+  const { data: rec, error: e1 } = await supabase
+    .from("recordings")
+    .select("storage_path, type")
+    .eq("id", req.params.id)
+    .single();
+  if (e1 || !rec) return res.status(404).json({ error: "rekaman tidak ditemukan" });
+
+  // 2. Buat signed URL sementara
+  const { data: signed, error: e2 } = await supabase.storage
+    .from(SUPABASE_BUCKET)
+    .createSignedUrl(rec.storage_path, 300);
+  if (e2) return res.status(500).json({ error: e2.message });
+
+  const ext = rec.storage_path.split(".").pop().toLowerCase();
+
+  // Format yang didukung browser secara native
+  const browserNative = ["mp4", "webm", "ogg"];
+  const needsTranscode = !browserNative.includes(ext);
+
+  // 3a. Format didukung browser → proxy langsung dengan support Range
+  if (!needsTranscode) {
+    const mimeMap = { mp4: "video/mp4", webm: "video/webm", ogg: "video/ogg",
+                      jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png" };
+    const mimeType = mimeMap[ext] || "application/octet-stream";
+
+    const rangeHeader = req.headers["range"];
+    const fetchHeaders = { Accept: "*/*" };
+    if (rangeHeader) fetchHeaders["Range"] = rangeHeader;
+
+    let upstream;
+    try {
+      upstream = await fetch(signed.signedUrl, { headers: fetchHeaders });
+    } catch (err) {
+      return res.status(502).json({ error: "Gagal ambil dari storage: " + err.message });
+    }
+
+    const statusCode = rangeHeader && upstream.status === 206 ? 206 : upstream.status;
+    res.status(statusCode);
+    res.set("Content-Type", upstream.headers.get("content-type") || mimeType);
+    res.set("Accept-Ranges", "bytes");
+    const cl = upstream.headers.get("content-length");
+    if (cl) res.set("Content-Length", cl);
+    const cr = upstream.headers.get("content-range");
+    if (cr) res.set("Content-Range", cr);
+
+    const reader = upstream.body.getReader();
+    const pump = () => reader.read().then(({ done, value }) => {
+      if (done) { res.end(); return; }
+      res.write(Buffer.from(value));
+      pump();
+    }).catch(() => res.end());
+    pump();
+    return;
+  }
+
+  // 3b. Format TIDAK didukung browser (AVI, MKV, MOV…) → transcode via ffmpeg
+  console.log(`[stream] Transcode ${ext} → mp4 untuk recording ${req.params.id}`);
+
+  res.set("Content-Type", "video/mp4");
+  res.set("Transfer-Encoding", "chunked");
+  // Tidak set Content-Length karena ukuran output tidak diketahui sebelumnya
+
+  // ffmpeg baca dari stdin (pipe dari Supabase), encode ke stdout sebagai MP4
+  const ffmpegPath = require("path").join(process.env.LOCALAPPDATA, "Microsoft", "WinGet", "Links", "ffmpeg.exe");
+  const ff = spawn(ffmpegPath, [
+    "-loglevel", "error",
+    "-i", "pipe:0",           // baca dari stdin
+    "-c:v", "libx264",        // encode video H.264
+    "-preset", "ultrafast",   // paling cepat (tradeoff: ukuran lebih besar)
+    "-crf", "28",             // kualitas (18=tinggi, 28=cukup baik, 35=rendah)
+    "-c:a", "aac",            // encode audio AAC
+    "-movflags", "frag_keyframe+empty_moov+faststart", // streaming-friendly MP4
+    "-f", "mp4",              // output format
+    "pipe:1",                 // tulis ke stdout
+  ]);
+
+  ff.stdout.pipe(res);
+  ff.stderr.on("data", (d) => console.error("[ffmpeg]", d.toString()));
+  ff.on("error", (err) => {
+    console.error("[ffmpeg] Error spawn:", err);
+    if (!res.headersSent) {
+      res.removeHeader("Transfer-Encoding"); // Hapus header chunked agar express bisa hitung Content-Length untuk JSON
+      res.status(500).json({
+        error: `Gagal memproses video .${ext} - ` + err.message,
+        tip: "Pastikan ffmpeg terinstal dengan benar",
+      });
+    }
+    ff.kill();
+  });
+  ff.on("close", () => { if (!res.writableEnded) res.end(); });
+
+  // Unduh file dari Supabase dan pipe ke stdin ffmpeg
+  try {
+    const upstream = await fetch(signed.signedUrl);
+    if (!upstream.ok) {
+      ff.kill();
+      return;
+    }
+    const reader = upstream.body.getReader();
+    const pipeToFfmpeg = () => reader.read().then(({ done, value }) => {
+      if (done) { ff.stdin.end(); return; }
+      ff.stdin.write(Buffer.from(value));
+      pipeToFfmpeg();
+    }).catch(() => ff.stdin.end());
+    pipeToFfmpeg();
+  } catch {
+    ff.kill();
+  }
+});
+
 // Kirim perintah ke device (rekam / stop / foto)
 app.post("/devices/:id/command", (req, res) => {
   const { id } = req.params;
