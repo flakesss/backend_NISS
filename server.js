@@ -340,6 +340,20 @@ app.get("/recordings/:id/thumbnail", async (req, res) => {
   ff.on("close", () => { if (!res.writableEnded) res.end(); });
 });
 
+// ── Snapshot tunggal dari Pi (dipakai frontend untuk polling) ────────────────
+app.get("/stream/snapshot", (req, res) => {
+  const piReq = http.request({
+    hostname: "127.0.0.1", port: 5000, path: "/snapshot", method: "GET",
+  }, (piRes) => {
+    if (piRes.statusCode === 503) return res.status(503).end();
+    res.set("Content-Type", "image/jpeg");
+    res.set("Cache-Control", "no-cache, no-store");
+    piRes.pipe(res);
+  });
+  piReq.on("error", () => res.status(503).end());
+  piReq.end();
+});
+
 // ── Proxy live stream MJPEG dari Pi ──────────────────────────────────────────
 // Frontend cukup pakai <img src="/api/stream/live"> tanpa perlu tahu IP Pi
 app.get("/stream/live", (req, res) => {
