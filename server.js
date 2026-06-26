@@ -191,8 +191,10 @@ app.get("/recordings/:id/stream", async (req, res) => {
 
   const ext = rec.storage_path.split(".").pop().toLowerCase();
 
-  // Format yang didukung browser secara native
-  const browserNative = ["mp4", "webm", "ogg"];
+  // Browser hanya support H.264/AAC di MP4 — rekaman kita pakai mp4v (MPEG-4 Part 2)
+  // yang tidak dikenal browser, jadi semua video perlu transcode ke H.264 via ffmpeg.
+  // Foto (jpg/png/webm) tetap di-proxy langsung.
+  const browserNative = ["jpg", "jpeg", "png", "webm", "ogg"];
   const needsTranscode = !browserNative.includes(ext);
 
   // 3a. Format didukung browser → proxy langsung dengan support Range
@@ -214,7 +216,7 @@ app.get("/recordings/:id/stream", async (req, res) => {
 
     const statusCode = rangeHeader && upstream.status === 206 ? 206 : upstream.status;
     res.status(statusCode);
-    res.set("Content-Type", upstream.headers.get("content-type") || mimeType);
+    res.set("Content-Type", mimeType);
     res.set("Accept-Ranges", "bytes");
     const cl = upstream.headers.get("content-length");
     if (cl) res.set("Content-Length", cl);
@@ -231,61 +233,32 @@ app.get("/recordings/:id/stream", async (req, res) => {
     return;
   }
 
-  // 3b. Format TIDAK didukung browser (AVI, MKV, MOV…) → transcode via ffmpeg
+  // 3b. Format tidak didukung browser (AVI, MKV, MOV…) → transcode via ffmpeg
+  // ffmpeg langsung baca dari signed URL Supabase (bisa seek, tidak perlu stdin pipe)
   console.log(`[stream] Transcode ${ext} → mp4 untuk recording ${req.params.id}`);
 
   res.set("Content-Type", "video/mp4");
   res.set("Transfer-Encoding", "chunked");
-  // Tidak set Content-Length karena ukuran output tidak diketahui sebelumnya
 
-  // ffmpeg baca dari stdin (pipe dari Supabase), encode ke stdout sebagai MP4
-  const ffmpegPath = process.platform === "win32"
-    ? require("path").join(process.env.LOCALAPPDATA || "", "Microsoft", "WinGet", "Links", "ffmpeg.exe")
-    : "ffmpeg";
-  const ff = spawn(ffmpegPath, [
+  const ff = spawn("ffmpeg", [
     "-loglevel", "error",
-    "-i", "pipe:0",           // baca dari stdin
-    "-c:v", "libx264",        // encode video H.264
-    "-preset", "ultrafast",   // paling cepat (tradeoff: ukuran lebih besar)
-    "-crf", "28",             // kualitas (18=tinggi, 28=cukup baik, 35=rendah)
-    "-c:a", "aac",            // encode audio AAC
-    "-movflags", "frag_keyframe+empty_moov+faststart", // streaming-friendly MP4
-    "-f", "mp4",              // output format
-    "pipe:1",                 // tulis ke stdout
+    "-i", signed.signedUrl,
+    "-c:v", "libx264",
+    "-preset", "ultrafast",
+    "-crf", "28",
+    "-an",
+    "-movflags", "frag_keyframe+empty_moov+faststart",
+    "-f", "mp4",
+    "pipe:1",
   ]);
 
   ff.stdout.pipe(res);
   ff.stderr.on("data", (d) => console.error("[ffmpeg]", d.toString()));
   ff.on("error", (err) => {
     console.error("[ffmpeg] Error spawn:", err);
-    if (!res.headersSent) {
-      res.removeHeader("Transfer-Encoding"); // Hapus header chunked agar express bisa hitung Content-Length untuk JSON
-      res.status(500).json({
-        error: `Gagal memproses video .${ext} - ` + err.message,
-        tip: "Pastikan ffmpeg terinstal dengan benar",
-      });
-    }
-    ff.kill();
+    if (!res.headersSent) res.status(500).json({ error: "Gagal transcode: " + err.message });
   });
   ff.on("close", () => { if (!res.writableEnded) res.end(); });
-
-  // Unduh file dari Supabase dan pipe ke stdin ffmpeg
-  try {
-    const upstream = await fetch(signed.signedUrl);
-    if (!upstream.ok) {
-      ff.kill();
-      return;
-    }
-    const reader = upstream.body.getReader();
-    const pipeToFfmpeg = () => reader.read().then(({ done, value }) => {
-      if (done) { ff.stdin.end(); return; }
-      ff.stdin.write(Buffer.from(value));
-      pipeToFfmpeg();
-    }).catch(() => ff.stdin.end());
-    pipeToFfmpeg();
-  } catch {
-    ff.kill();
-  }
 });
 
 // ── Thumbnail galeri (foto → proxy image, video → ffmpeg extract frame) ──────
@@ -322,7 +295,7 @@ app.get("/recordings/:id/thumbnail", async (req, res) => {
     return;
   }
 
-  // Video: extract 1 frame di detik ke-1 pakai ffmpeg
+  // Video: extract 1 frame di detik ke-1 pakai ffmpeg (langsung dari signed URL)
   res.set("Content-Type", "image/jpeg");
   const ff = spawn("ffmpeg", [
     "-loglevel", "error",
