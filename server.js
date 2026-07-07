@@ -314,8 +314,9 @@ app.get("/recordings/:id/thumbnail", async (req, res) => {
 
 // ── Snapshot tunggal dari Pi (dipakai frontend untuk polling) ────────────────
 app.get("/stream/snapshot", (req, res) => {
+  const piUrl = new URL(PI_STREAM_URL);
   const piReq = http.request({
-    hostname: "127.0.0.1", port: 5000, path: "/snapshot", method: "GET",
+    hostname: piUrl.hostname, port: piUrl.port || 5000, path: "/snapshot", method: "GET",
   }, (piRes) => {
     if (piRes.statusCode === 503) return res.status(503).end();
     res.set("Content-Type", "image/jpeg");
