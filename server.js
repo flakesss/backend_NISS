@@ -16,8 +16,7 @@ require("dotenv").config();
 const PORT = process.env.PORT || 3000;
 const PI_STREAM_URL = process.env.PI_STREAM_URL || "http://localhost:5000/stream";
 
-const MQTT_HOST = process.env.MQTT_HOST;
-const MQTT_PORT = parseInt(process.env.MQTT_PORT) || 8883;
+const MQTT_URL = process.env.MQTT_URL;
 const MQTT_USERNAME = process.env.MQTT_USERNAME;
 const MQTT_PASSWORD = process.env.MQTT_PASSWORD;
 
@@ -41,10 +40,10 @@ const MAX_EVENTS = 50;
 const insertedPaths = new Set();
 
 // ---- Koneksi MQTT ----
-const mqttClient = mqtt.connect(`mqtts://${MQTT_HOST}:${MQTT_PORT}`, {
-  username: MQTT_USERNAME,
-  password: MQTT_PASSWORD,
-});
+const mqttOptions = {};
+if (MQTT_USERNAME) mqttOptions.username = MQTT_USERNAME;
+if (MQTT_PASSWORD) mqttOptions.password = MQTT_PASSWORD;
+const mqttClient = mqtt.connect(MQTT_URL, mqttOptions);
 
 mqttClient.on("connect", () => {
   console.log("Backend terhubung ke broker MQTT");
