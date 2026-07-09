@@ -8,40 +8,45 @@ REST API backend untuk sistem endoskopi NISS. Berjalan di Raspberry Pi, menjemba
 Browser / Vercel Frontend
         │  HTTPS
         ▼
-  ngrok tunnel  ──►  Backend (Node.js :3000)
-                            │
-               ┌────────────┼────────────┐
-               ▼            ▼            ▼
-        MQTT Broker    Flask Stream   Supabase
-        (HiveMQ)       (:5000)        Storage & DB
-               │
-               ▼
-        mqtt_server.py
-        (kamera + rekam)
+  app.satsetin.com
+  (Cloudflare Tunnel)
+        │
+        ▼
+  Docker Compose
+  ├── backend (Node.js :3000)   ← repo ini
+  ├── mosquitto (MQTT :1883)
+  └── cloudflared (tunnel agent)
+        │
+        ▼
+  Flask Stream (:5000) + mqtt_server.py
+  (jalan native di host)
+        │
+        ▼
+  Supabase (Storage & DB)
 ```
 
 ## Prasyarat
 
 ### Perangkat Keras
-- Raspberry Pi 4 (direkomendasikan) atau perangkat Linux lainnya
+- Raspberry Pi 4 (direkomendasikan) atau PC Linux
 - Kamera USB (endoskop / webcam)
 
 ### Perangkat Lunak
 ```bash
-# Node.js 18+
+# Docker & Docker Compose (untuk backend + mosquitto + cloudflared)
+docker --version
+docker compose version
+
+# Node.js 18+ (opsional, untuk development lokal)
 node --version
 
-# Python 3.9+
+# Python 3.9+ (untuk mqtt_server.py di host)
 python3 --version
 
-# ffmpeg (untuk transcode video AVI → MP4)
-sudo apt install ffmpeg
+# ffmpeg (untuk transcode video — sudah di-install otomatis di Dockerfile)
+# Jika jalan tanpa Docker: sudo apt install ffmpeg
 
-# ngrok (untuk tunnel HTTPS publik)
-# Download dari https://ngrok.com/download lalu:
-sudo mv ngrok /usr/local/bin/
-
-# PM2 (process manager)
+# PM2 (untuk menjalankan kamera & tunnel di host)
 npm install -g pm2
 
 # Dependensi Python
@@ -82,17 +87,11 @@ Salin dan isi file `.env`:
 cp .env.example .env
 ```
 
-Isi `.env`:
+Isi `backend/.env`:
 
 ```env
 PORT=3000
-PI_STREAM_URL=http://127.0.0.1:5000/stream
-
-# HiveMQ Cloud
-MQTT_HOST=<your>.s1.eu.hivemq.cloud
-MQTT_PORT=8883
-MQTT_USERNAME=<username>
-MQTT_PASSWORD=<password>
+PI_STREAM_URL=http://host.docker.internal:5000/stream
 
 # Supabase
 SUPABASE_URL=https://<project>.supabase.co
@@ -100,56 +99,62 @@ SUPABASE_SERVICE_KEY=<service_role_key>
 SUPABASE_BUCKET=endoskop-media
 ```
 
-### 4. Konfigurasi ngrok
+> `MQTT_URL` di-override oleh Docker Compose ke `mqtt://mosquitto:1883` — tidak perlu diisi di `.env`.
 
-Login ngrok dan set static domain:
+### 4. Konfigurasi Cloudflare Tunnel
 
-```bash
-ngrok config add-authtoken <your_token>
+Buat file `.env` di **root repo** (sejajar `docker-compose.yml`):
+
+```env
+CLOUDFLARE_TOKEN=<token dari Cloudflare Zero Trust dashboard>
 ```
 
-Edit `ecosystem.config.js` — ganti URL ngrok di bagian `niss-stream-tunnel`:
-
-```js
-args: "http --url=<your-static-domain>.ngrok-free.app 3000"
-```
+Token didapat dari: **Cloudflare Dashboard → Zero Trust → Networks → Tunnels → klik tunnel → Configure**
 
 ### 5. Build Frontend
 
 ```bash
 cd website/frontend
 npm install
-VITE_API_URL=https://<your-static-domain>.ngrok-free.app npm run build
-cp -r dist ../backend/frontend/dist
+VITE_API_URL=https://app.satsetin.com npm run build
 ```
 
-Atau jika frontend di-deploy ke Vercel, cukup set environment variable `VITE_API_URL` di Vercel dashboard.
+Output `dist/` otomatis di-mount ke backend container via volume di `docker-compose.yml`.
 
 ---
 
 ## Menjalankan Server
 
-### Semua sekaligus (direkomendasikan)
+### Dengan Docker Compose (direkomendasikan)
+
+Dari root repo (folder yang berisi `docker-compose.yml`):
 
 ```bash
-cd website/backend
-pm2 start ecosystem.config.js
-pm2 save   # simpan agar auto-start setelah reboot
-pm2 startup  # ikuti instruksi yang ditampilkan
+docker compose up -d       # jalankan semua service
+docker compose ps          # cek status
+docker logs niss-backend   # log backend
+docker logs niss-cloudflared  # cek koneksi tunnel
 ```
 
-### Manual per proses
+### Kamera & PM2 (di host / Pi)
+
+```bash
+# Jalankan kamera script
+cd <root-repo>
+pm2 start ecosystem.config.js --only niss-camera
+pm2 save
+pm2 startup
+```
+
+### Manual (tanpa Docker)
 
 ```bash
 # Terminal 1 — Backend API
-cd website/backend
+cd backend
 node server.js
 
 # Terminal 2 — Kamera & MQTT
-python3 mqtt_test/mqtt_server.py
-
-# Terminal 3 — Tunnel ngrok
-ngrok http --url=<your-domain>.ngrok-free.app 3000
+python3 mqtt_server.py
 ```
 
 ---
@@ -236,5 +241,5 @@ pm2 logs niss-camera | grep Resolusi
 | Stream snapshot offline | Cek `pm2 logs niss-camera` — pastikan kamera terbuka dan Flask jalan di port 5000 |
 | Upload ke Supabase gagal | Cek `SUPABASE_SERVICE_KEY` di `.env` — harus menggunakan **service_role** key, bukan anon key |
 | ffmpeg error saat stream video | `sudo apt install ffmpeg` dan pastikan versi ≥ 4.x |
-| ngrok ERR_NGROK_6024 | Frontend harus mengirim header `ngrok-skip-browser-warning: 1` di setiap request |
+| Cloudflare tunnel tidak connect | Cek `docker logs niss-cloudflared` — pastikan `CLOUDFLARE_TOKEN` di `.env` root sudah benar |
 | PM2 tidak load perubahan file | `pm2 restart <name>` — PM2 cache modul, perlu restart manual |
