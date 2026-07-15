@@ -353,6 +353,20 @@ app.get("/stream/live", (req, res) => {
   piReq.end();
 });
 
+// ── Info resolusi & FPS asli kamera Pi (bukan angka statis) ──────────────────
+app.get("/stream/info", (req, res) => {
+  const piUrl = new URL(PI_STREAM_URL);
+  const piReq = http.request({
+    hostname: piUrl.hostname, port: piUrl.port || 80, path: "/info", method: "GET",
+  }, (piRes) => {
+    let data = "";
+    piRes.on("data", (chunk) => (data += chunk));
+    piRes.on("end", () => res.status(piRes.statusCode).set("Content-Type", "application/json").send(data));
+  });
+  piReq.on("error", () => res.status(503).json({ error: "Info Pi tidak tersedia" }));
+  piReq.end();
+});
+
 // ── Analisis faringitis on-demand (tombol "Analisis" per foto/snapshot) ──────
 // Frontend kirim body = bytes JPEG mentah (bukan JSON), diteruskan sebagai
 // multipart/form-data ke service pharyngitis-ws (FastAPI, endpoint /predict).
