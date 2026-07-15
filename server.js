@@ -15,6 +15,7 @@ require("dotenv").config();
 
 const PORT = process.env.PORT || 3000;
 const PI_STREAM_URL = process.env.PI_STREAM_URL || "http://localhost:5000/stream";
+const PHARYNGITIS_URL = process.env.PHARYNGITIS_URL || "http://localhost:8000";
 
 const MQTT_URL = process.env.MQTT_URL;
 const MQTT_USERNAME = process.env.MQTT_USERNAME;
@@ -350,6 +351,42 @@ app.get("/stream/live", (req, res) => {
 
   req.on("close", () => piReq.destroy());
   piReq.end();
+});
+
+// ── Analisis faringitis on-demand (tombol "Analisis" per foto/snapshot) ──────
+// Frontend kirim body = bytes JPEG mentah (bukan JSON), diteruskan sebagai
+// multipart/form-data ke service pharyngitis-ws (FastAPI, endpoint /predict).
+app.post("/analyze", express.raw({ type: "image/*", limit: "10mb" }), (req, res) => {
+  if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+    return res.status(400).json({ error: "Body harus berupa gambar (image/jpeg)" });
+  }
+
+  const boundary = `----niss${Date.now()}`;
+  const head = Buffer.from(
+    `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="snapshot.jpg"\r\nContent-Type: image/jpeg\r\n\r\n`
+  );
+  const tail = Buffer.from(`\r\n--${boundary}--\r\n`);
+  const multipartBody = Buffer.concat([head, req.body, tail]);
+
+  const url = new URL(`${PHARYNGITIS_URL}/predict`);
+  const analyzeReq = http.request({
+    hostname: url.hostname,
+    port: url.port || 80,
+    path: url.pathname,
+    method: "POST",
+    headers: {
+      "Content-Type": `multipart/form-data; boundary=${boundary}`,
+      "Content-Length": multipartBody.length,
+    },
+  }, (modelRes) => {
+    let data = "";
+    modelRes.on("data", (chunk) => (data += chunk));
+    modelRes.on("end", () => {
+      res.status(modelRes.statusCode).set("Content-Type", "application/json").send(data);
+    });
+  });
+  analyzeReq.on("error", () => res.status(503).json({ error: "Service analisis tidak tersedia" }));
+  analyzeReq.end(multipartBody);
 });
 
 // Kirim perintah ke device (rekam / stop / foto)
