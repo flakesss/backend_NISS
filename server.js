@@ -16,6 +16,7 @@ require("dotenv").config();
 const PORT = process.env.PORT || 3000;
 const PI_STREAM_URL = process.env.PI_STREAM_URL || "http://localhost:5000/stream";
 const PHARYNGITIS_URL = process.env.PHARYNGITIS_URL || "http://localhost:8000";
+const CS_RECONSTRUCT_URL = process.env.CS_RECONSTRUCT_URL || "http://localhost:6000";
 
 const MQTT_URL = process.env.MQTT_URL;
 const MQTT_USERNAME = process.env.MQTT_USERNAME;
@@ -365,6 +366,62 @@ app.get("/stream/info", (req, res) => {
   });
   piReq.on("error", () => res.status(503).json({ error: "Info Pi tidak tersedia" }));
   piReq.end();
+});
+
+// ── Compressive Sensing (payload belum direkonstruksi, dikirim Pi→server) ────
+// Frontend toggle "Mode: Normal / Compressive Sensing" memakai endpoint ini
+// sebagai pengganti /stream/snapshot. Payload biner CS diambil dari Pi
+// (/snapshot_cs, belum direkonstruksi), diteruskan ke service cs-reconstruct
+// (OMP+DCT), hasilnya (JPEG) diteruskan ke client.
+let lastCsStats = null; // { bytesIn, bytesOut, reconstructMs, jpegBytes, ts }
+
+app.get("/stream/snapshot/cs", (req, res) => {
+  const piUrl = new URL(PI_STREAM_URL);
+  const piReq = http.request({
+    hostname: piUrl.hostname, port: piUrl.port || 80, path: "/snapshot_cs", method: "GET",
+  }, (piRes) => {
+    if (piRes.statusCode === 503) return res.status(503).end();
+    const chunks = [];
+    piRes.on("data", (c) => chunks.push(c));
+    piRes.on("end", () => {
+      const csPayload = Buffer.concat(chunks);
+      const reconUrl = new URL(`${CS_RECONSTRUCT_URL}/reconstruct`);
+      const reconReq = http.request({
+        hostname: reconUrl.hostname,
+        port: reconUrl.port || 80,
+        path: reconUrl.pathname,
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream", "Content-Length": csPayload.length },
+      }, (reconRes) => {
+        if (reconRes.statusCode !== 200) {
+          return res.status(502).json({ error: "Rekonstruksi CS gagal" });
+        }
+        const jpegChunks = [];
+        reconRes.on("data", (c) => jpegChunks.push(c));
+        reconRes.on("end", () => {
+          const jpeg = Buffer.concat(jpegChunks);
+          lastCsStats = {
+            bytesIn: Number(reconRes.headers["x-cs-bytes-in"] || csPayload.length),
+            bytesOut: Number(reconRes.headers["x-cs-bytes-out"] || jpeg.length),
+            reconstructMs: Number(reconRes.headers["x-cs-reconstruct-ms"] || 0),
+            ts: Date.now(),
+          };
+          res.set("Content-Type", "image/jpeg");
+          res.set("Cache-Control", "no-cache, no-store");
+          res.send(jpeg);
+        });
+      });
+      reconReq.on("error", () => res.status(503).json({ error: "Service cs-reconstruct tidak tersedia" }));
+      reconReq.end(csPayload);
+    });
+  });
+  piReq.on("error", () => res.status(503).json({ error: "Snapshot CS Pi tidak tersedia" }));
+  piReq.end();
+});
+
+// ── Statistik pembanding ukuran payload CS vs JPEG (data empiris skripsi) ────
+app.get("/stream/cs-stats", (req, res) => {
+  res.json({ last: lastCsStats });
 });
 
 // ── Analisis faringitis on-demand (tombol "Analisis" per foto/snapshot) ──────
