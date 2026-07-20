@@ -102,7 +102,21 @@ function decryptJson(payloadStr, key) {
   return JSON.parse(plaintext.toString("utf8"));
 }
 
+/**
+ * Dekripsi file terenkripsi (.enc) dari Supabase Storage.
+ * File .enc berisi JSON {nonce_b64, ciphertext_b64, tag_b64}.
+ * @param {Buffer} encryptedBuffer - Buffer berisi JSON paket terenkripsi
+ * @param {Buffer} [key]
+ * @returns {Buffer} File asli (plaintext bytes — gambar/video)
+ * @throws {Error} Jika dekripsi gagal / data rusak / key salah
+ */
+function decryptFile(encryptedBuffer, key) {
+  const packet = JSON.parse(encryptedBuffer.toString("utf8"));
+  return decryptPacket(packet, key);
+}
+
 module.exports = {
   loadKey, encryptPacket, decryptPacket, encryptJson, decryptJson,
+  decryptFile,
   KEY_LENGTH, NONCE_LENGTH, TAG_LENGTH,
 };

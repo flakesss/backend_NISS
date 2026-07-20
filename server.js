@@ -197,8 +197,8 @@ app.get("/recordings/:id/url", async (req, res) => {
 });
 
 // ── Stream video/foto langsung dari Supabase Storage melalui backend ──────────
-// Untuk format yang tidak didukung browser (AVI, MKV, MOV),
-// backend akan otomatis transcode ke MP4 via ffmpeg jika tersedia.
+// File .enc (terenkripsi AES-128-GCM) didekripsi secara transparan sebelum dikirim.
+// File lama (tanpa .enc) tetap di-proxy langsung (backward-compatible).
 app.get("/recordings/:id/stream", async (req, res) => {
   const { spawn } = require("child_process");
 
@@ -210,12 +210,72 @@ app.get("/recordings/:id/stream", async (req, res) => {
     .single();
   if (e1 || !rec) return res.status(404).json({ error: "rekaman tidak ditemukan" });
 
+  const isEncrypted = rec.storage_path.endsWith(".enc");
+
   // 2. Buat signed URL sementara
   const { data: signed, error: e2 } = await supabase.storage
     .from(SUPABASE_BUCKET)
     .createSignedUrl(rec.storage_path, 300);
   if (e2) return res.status(500).json({ error: e2.message });
 
+  // ── File terenkripsi (.enc): download seluruh buffer → dekripsi → serve ──
+  if (isEncrypted) {
+    try {
+      const upstream = await fetch(signed.signedUrl);
+      if (!upstream.ok) return res.status(502).json({ error: "Gagal download dari storage" });
+      const encBuffer = Buffer.from(await upstream.arrayBuffer());
+
+      // Dekripsi AES-128-GCM → file asli (plaintext)
+      const plainBuffer = aesUtils.decryptFile(encBuffer);
+      console.log(`[AES] Dekripsi file: ${rec.storage_path} (${encBuffer.length} → ${plainBuffer.length} bytes)`);
+
+      // Tentukan ekstensi asli (hilangkan .enc dari path, misal foto.jpg.enc → jpg)
+      const origPath = rec.storage_path.replace(/\.enc$/, "");
+      const ext = origPath.split(".").pop().toLowerCase();
+      const mimeMap = {
+        mp4: "video/mp4", webm: "video/webm", ogg: "video/ogg",
+        jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png",
+        avi: "video/x-msvideo", mkv: "video/x-matroska",
+      };
+
+      // Foto/format browser-native: langsung kirim buffer
+      const browserNative = ["jpg", "jpeg", "png", "webm", "ogg"];
+      if (browserNative.includes(ext)) {
+        const mimeType = mimeMap[ext] || "application/octet-stream";
+        res.set("Content-Type", mimeType);
+        res.set("Content-Length", plainBuffer.length);
+        return res.send(plainBuffer);
+      }
+
+      // Video: transcode via ffmpeg (stdin pipe karena data sudah di memory)
+      console.log(`[stream] Transcode ${ext} → mp4 (dari .enc) untuk recording ${req.params.id}`);
+      res.set("Content-Type", "video/mp4");
+      res.set("Transfer-Encoding", "chunked");
+
+      const ff = spawn("ffmpeg", [
+        "-loglevel", "error",
+        "-i", "pipe:0",
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28", "-an",
+        "-movflags", "frag_keyframe+empty_moov+faststart",
+        "-f", "mp4", "pipe:1",
+      ]);
+      ff.stdin.write(plainBuffer);
+      ff.stdin.end();
+      ff.stdout.pipe(res);
+      ff.stderr.on("data", (d) => console.error("[ffmpeg]", d.toString()));
+      ff.on("error", (err) => {
+        console.error("[ffmpeg] Error spawn:", err);
+        if (!res.headersSent) res.status(500).json({ error: "Gagal transcode: " + err.message });
+      });
+      ff.on("close", () => { if (!res.writableEnded) res.end(); });
+      return;
+    } catch (decErr) {
+      console.error(`[AES] Gagal dekripsi file ${rec.storage_path}:`, decErr.message);
+      return res.status(500).json({ error: "Gagal dekripsi file terenkripsi" });
+    }
+  }
+
+  // ── File TIDAK terenkripsi (backward-compatible, file lama) ──
   const ext = rec.storage_path.split(".").pop().toLowerCase();
 
   // Browser hanya support H.264/AAC di MP4 — rekaman kita pakai mp4v (MPEG-4 Part 2)
@@ -261,7 +321,6 @@ app.get("/recordings/:id/stream", async (req, res) => {
   }
 
   // 3b. Format tidak didukung browser (AVI, MKV, MOV…) → transcode via ffmpeg
-  // ffmpeg langsung baca dari signed URL Supabase (bisa seek, tidak perlu stdin pipe)
   console.log(`[stream] Transcode ${ext} → mp4 untuk recording ${req.params.id}`);
 
   res.set("Content-Type", "video/mp4");
@@ -289,6 +348,7 @@ app.get("/recordings/:id/stream", async (req, res) => {
 });
 
 // ── Thumbnail galeri (foto → proxy image, video → ffmpeg extract frame) ──────
+// File .enc didekripsi secara transparan (backward-compatible dengan file lama).
 app.get("/recordings/:id/thumbnail", async (req, res) => {
   const { spawn } = require("child_process");
 
@@ -299,6 +359,8 @@ app.get("/recordings/:id/thumbnail", async (req, res) => {
     .single();
   if (e1 || !rec) return res.status(404).end();
 
+  const isEncrypted = rec.storage_path.endsWith(".enc");
+
   const { data: signed, error: e2 } = await supabase.storage
     .from(SUPABASE_BUCKET)
     .createSignedUrl(rec.storage_path, 300);
@@ -306,6 +368,46 @@ app.get("/recordings/:id/thumbnail", async (req, res) => {
 
   res.set("Cache-Control", "public, max-age=3600");
 
+  // ── File terenkripsi (.enc): download → dekripsi → serve thumbnail ──
+  if (isEncrypted) {
+    try {
+      const upstream = await fetch(signed.signedUrl);
+      if (!upstream.ok) return res.status(502).end();
+      const encBuffer = Buffer.from(await upstream.arrayBuffer());
+      const plainBuffer = aesUtils.decryptFile(encBuffer);
+
+      if (rec.type === "foto") {
+        // Foto: kirim langsung setelah dekripsi
+        res.set("Content-Type", "image/jpeg");
+        res.set("Content-Length", plainBuffer.length);
+        return res.send(plainBuffer);
+      }
+
+      // Video: extract 1 frame via ffmpeg dari stdin pipe
+      res.set("Content-Type", "image/jpeg");
+      const ff = spawn("ffmpeg", [
+        "-loglevel", "error",
+        "-ss", "00:00:01",
+        "-i", "pipe:0",
+        "-vframes", "1",
+        "-vf", "scale=320:-1",
+        "-f", "image2", "-vcodec", "mjpeg",
+        "pipe:1",
+      ]);
+      ff.stdin.write(plainBuffer);
+      ff.stdin.end();
+      ff.stdout.pipe(res);
+      ff.stderr.on("data", d => console.error("[thumb]", d.toString().trim()));
+      ff.on("error", () => { if (!res.headersSent) res.status(500).end(); });
+      ff.on("close", () => { if (!res.writableEnded) res.end(); });
+      return;
+    } catch (decErr) {
+      console.error(`[AES] Gagal dekripsi thumbnail ${rec.storage_path}:`, decErr.message);
+      return res.status(500).end();
+    }
+  }
+
+  // ── File TIDAK terenkripsi (backward-compatible) ──
   if (rec.type === "foto") {
     // Foto: proxy gambar langsung dari Supabase
     res.set("Content-Type", "image/jpeg");
