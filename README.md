@@ -109,6 +109,9 @@ MQTT_PASSWORD=your_mqtt_password
 SUPABASE_URL=https://<project>.supabase.co
 SUPABASE_SERVICE_KEY=<service_role_key>
 SUPABASE_BUCKET=endoskop-media
+
+# Enkripsi AES-128-GCM (WAJIB)
+NISS_AES_KEY=<hex key 32 karakter dari Pi>
 ```
 
 | Variabel | Default | Keterangan |
@@ -122,6 +125,7 @@ SUPABASE_BUCKET=endoskop-media
 | `SUPABASE_URL` | - | URL project Supabase |
 | `SUPABASE_SERVICE_KEY` | - | Kunci API `service_role` dari Supabase (bukan `anon` key agar bisa upload & kelola database) |
 | `SUPABASE_BUCKET` | `endoskop-media` | Nama bucket storage di Supabase |
+| `NISS_AES_KEY` | - | **WAJIB.** Key AES-128 hex (32 char). Harus identik dengan key di Pi. Dapatkan dari output startup Pi atau `python3 -c "print(open('aes_key.bin','rb').read().hex())"` |
 
 ### 4. Konfigurasi Cloudflare Tunnel (Opsional / Production)
 
@@ -265,3 +269,22 @@ pm2 logs niss-camera | grep Resolusi
 | ffmpeg error saat stream video | `sudo apt install ffmpeg` dan pastikan versi ≥ 4.x |
 | Cloudflare tunnel tidak connect | Cek `docker logs niss-cloudflared` — pastikan `CLOUDFLARE_TOKEN` di `.env` root sudah benar |
 | PM2 tidak load perubahan file | `pm2 restart <name>` — PM2 cache modul, perlu restart manual |
+| `[SECURITY] Dekripsi/autentikasi gagal` | `NISS_AES_KEY` di `.env` backend tidak cocok dengan key di Pi. Salin ulang hex key dari Pi |
+| `[AES] Environment variable NISS_AES_KEY belum di-set` | Tambahkan `NISS_AES_KEY=<hex>` ke `.env` backend |
+
+## Enkripsi AES-128-GCM
+
+Semua payload MQTT antara device (Pi) dan backend dienkripsi menggunakan **AES-128-GCM**:
+- **Command** (backend → Pi): dienkripsi sebelum publish ke topic `command`
+- **Event** (Pi → backend): didekripsi saat diterima dari topic `event`
+- **Status** (Pi → backend): didekripsi saat diterima; fallback plaintext untuk Last Will
+
+Frontend **tidak perlu perubahan** — menerima data plaintext dari backend via REST API seperti biasa.
+
+### Setup Key
+
+1. Jalankan `mqtt_server.py` di Pi (pertama kali akan generate key otomatis)
+2. Salin hex key dari log Pi ke `.env` backend: `NISS_AES_KEY=<hex>`
+3. Restart backend
+
+> **Catatan Hardware:** Raspberry Pi 4 (BCM2711) tidak punya hardware AES accelerator — semua operasi AES software-only. Untuk data kecil (MQTT payload JSON), ini tidak menjadi bottleneck.

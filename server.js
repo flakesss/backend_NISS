@@ -1,6 +1,7 @@
 // Backend Endoskop — jembatan REST API <-> MQTT + simpan metadata ke Supabase
 // Frontend memanggil REST API ini; backend meneruskannya ke Pi lewat MQTT,
 // dan mencatat metadata media ke tabel Supabase.
+// Payload MQTT dienkripsi dengan AES-128-GCM (kerahasiaan + integritas).
 
 const http = require("http");
 const path = require("path");
@@ -12,6 +13,17 @@ const { createClient } = require("@supabase/supabase-js");
 
 // ====== KONFIGURASI ======
 require("dotenv").config();
+const aesUtils = require("./aesUtils");
+
+// Inisialisasi AES key dari env var — HARUS identik dengan key di devices_NISS (Pi)
+try {
+  aesUtils.loadKey();
+} catch (e) {
+  console.error(e.message);
+  console.error("Backend tidak bisa mengenkripsi/mendekripsi MQTT tanpa key.");
+  console.error("Set NISS_AES_KEY di .env (hex string 32 karakter dari Pi).");
+  process.exit(1);
+}
 
 const PORT = process.env.PORT || 3000;
 const PI_STREAM_URL = process.env.PI_STREAM_URL || "http://localhost:5000/stream";
@@ -60,10 +72,24 @@ mqttClient.on("message", (topic, payload) => {
 
   let data;
   try {
-    data = JSON.parse(payload.toString());
-  } catch {
-    console.log("Pesan MQTT bukan JSON:", payload.toString());
-    return;
+    // Dekripsi payload MQTT (AES-128-GCM) dari device
+    data = aesUtils.decryptJson(payload.toString());
+  } catch (decErr) {
+    // Fallback: Last Will "offline" dikirim broker sebagai plaintext
+    // karena MQTT Last Will di-set sekali saat connect (tidak bisa pakai nonce unik)
+    if (kind === "status") {
+      try {
+        data = JSON.parse(payload.toString());
+        console.log(`[AES] Fallback plaintext untuk status/${deviceId}:`, data);
+      } catch {
+        console.log("[SECURITY] Dekripsi gagal dan bukan plaintext valid:", decErr.message);
+        return;
+      }
+    } else {
+      // Event/data non-status yang gagal didekripsi = DITOLAK
+      console.error(`[SECURITY] Dekripsi/autentikasi gagal (${kind}/${deviceId}):`, decErr.message);
+      return;
+    }
   }
 
   if (kind === "status") {
@@ -473,8 +499,10 @@ app.post("/devices/:id/command", (req, res) => {
   }
 
   const topic = `endoskop/${id}/command`;
-  mqttClient.publish(topic, JSON.stringify({ cmd }), { qos: 1 });
-  console.log(`Mengirim perintah '${cmd}' ke ${id}`);
+  // Enkripsi command sebelum publish — device akan mendekripsinya
+  const encPayload = aesUtils.encryptJson({ cmd });
+  mqttClient.publish(topic, encPayload, { qos: 1 });
+  console.log(`Mengirim perintah '${cmd}' ke ${id} (encrypted)`);
 
   res.json({ ok: true, sentTo: id, cmd });
 });
