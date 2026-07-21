@@ -512,7 +512,16 @@ app.get("/stream/snapshot/cs", (req, res) => {
     const chunks = [];
     piRes.on("data", (c) => chunks.push(c));
     piRes.on("end", () => {
-      const csPayload = Buffer.concat(chunks);
+      const csPayloadEnc = Buffer.concat(chunks);
+      let csPayload;
+      try {
+        // Payload CS dienkripsi AES-128-GCM di Pi (format biner mentah,
+        // bukan JSON/base64) -- didekripsi di sini sebelum diteruskan ke
+        // cs-reconstruct (jaringan internal Docker, sudah dipercaya).
+        csPayload = aesUtils.decryptRaw(csPayloadEnc);
+      } catch (e) {
+        return res.status(502).json({ error: "Dekripsi payload CS gagal", detail: e.message });
+      }
       const reconUrl = new URL(`${CS_RECONSTRUCT_URL}/reconstruct`);
       const reconReq = http.request({
         hostname: reconUrl.hostname,
@@ -529,7 +538,7 @@ app.get("/stream/snapshot/cs", (req, res) => {
         reconRes.on("end", () => {
           const jpeg = Buffer.concat(jpegChunks);
           lastCsStats = {
-            bytesIn: Number(reconRes.headers["x-cs-bytes-in"] || csPayload.length),
+            bytesIn: csPayloadEnc.length, // ukuran nyata yang lewat jaringan (terenkripsi, +28 byte nonce/tag)
             bytesOut: Number(reconRes.headers["x-cs-bytes-out"] || jpeg.length),
             reconstructMs: Number(reconRes.headers["x-cs-reconstruct-ms"] || 0),
             ts: Date.now(),

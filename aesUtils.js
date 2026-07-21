@@ -88,6 +88,43 @@ function decryptPacket(packet, key) {
   }
 }
 
+/**
+ * Helper biner mentah (tanpa JSON/base64) -- dipakai untuk payload besar
+ * seperti Compressive Sensing, supaya tidak menambah overhead ~33% base64
+ * di atas payload yang memang sudah diperkecil habis-habisan.
+ * Format: nonce(12 byte) + tag(16 byte) + ciphertext.
+ */
+function encryptRaw(plaintext, key) {
+  if (!key) key = loadKey();
+  if (typeof plaintext === "string") plaintext = Buffer.from(plaintext, "utf8");
+  const nonce = crypto.randomBytes(NONCE_LENGTH);
+  const cipher = crypto.createCipheriv(ALGORITHM, key, nonce);
+  const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return Buffer.concat([nonce, tag, encrypted]);
+}
+
+/** Dekripsi bytes mentah dari encryptRaw (nonce+tag+ciphertext). */
+function decryptRaw(packet, key) {
+  if (!key) key = loadKey();
+  if (packet.length < NONCE_LENGTH + TAG_LENGTH) {
+    throw new Error("Payload terenkripsi terlalu pendek (rusak/salah format)");
+  }
+  const nonce = packet.subarray(0, NONCE_LENGTH);
+  const tag = packet.subarray(NONCE_LENGTH, NONCE_LENGTH + TAG_LENGTH);
+  const ciphertext = packet.subarray(NONCE_LENGTH + TAG_LENGTH);
+  const decipher = crypto.createDecipheriv(ALGORITHM, key, nonce);
+  decipher.setAuthTag(tag);
+  try {
+    return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+  } catch (e) {
+    throw new Error(
+      `Dekripsi AES-128-GCM gagal — data dirusak/tag tidak cocok/key salah. ` +
+      `Detail: ${e.message}`
+    );
+  }
+}
+
 /** Serialisasi object → JSON → encrypt → return JSON string. */
 function encryptJson(data, key) {
   const plaintext = JSON.stringify(data);
@@ -117,6 +154,6 @@ function decryptFile(encryptedBuffer, key) {
 
 module.exports = {
   loadKey, encryptPacket, decryptPacket, encryptJson, decryptJson,
-  decryptFile,
+  decryptFile, encryptRaw, decryptRaw,
   KEY_LENGTH, NONCE_LENGTH, TAG_LENGTH,
 };
