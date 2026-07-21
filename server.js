@@ -597,6 +597,33 @@ app.post("/analyze", express.raw({ type: "image/*", limit: "10mb" }), (req, res)
   analyzeReq.end(multipartBody);
 });
 
+// ── Info kompresi CS (toggle "Info Kompresi" pada modal galeri) ──────────────
+// Frontend kirim body = bytes gambar mentah (foto atau thumbnail video),
+// diteruskan ke service cs-reconstruct yang mensimulasikan encode+decode CS
+// di atas gambar itu lalu membalas metrik (PSNR, SSIM, ukuran payload).
+app.post("/cs-quality", express.raw({ type: "image/*", limit: "10mb" }), (req, res) => {
+  if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+    return res.status(400).json({ error: "Body harus berupa gambar (image/jpeg)" });
+  }
+
+  const url = new URL(`${CS_RECONSTRUCT_URL}/cs-quality`);
+  const csReq = http.request({
+    hostname: url.hostname,
+    port: url.port || 80,
+    path: url.pathname,
+    method: "POST",
+    headers: { "Content-Type": "application/octet-stream", "Content-Length": req.body.length },
+  }, (csRes) => {
+    let data = "";
+    csRes.on("data", (chunk) => (data += chunk));
+    csRes.on("end", () => {
+      res.status(csRes.statusCode).set("Content-Type", "application/json").send(data);
+    });
+  });
+  csReq.on("error", () => res.status(503).json({ error: "Service cs-reconstruct tidak tersedia" }));
+  csReq.end(req.body);
+});
+
 // Kirim perintah ke device (rekam / stop / foto)
 app.post("/devices/:id/command", (req, res) => {
   const { id } = req.params;
