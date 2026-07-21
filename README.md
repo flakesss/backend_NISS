@@ -215,6 +215,10 @@ pm2 delete all                  # hapus dari PM2
 | `GET` | `/recordings/:id/thumbnail` | Thumbnail JPEG untuk galeri |
 | `GET` | `/stream/snapshot` | Snapshot JPEG tunggal dari kamera |
 | `GET` | `/stream/live` | MJPEG live stream proxy |
+| `GET` | `/stream/info` | Resolusi & FPS aktual kamera Pi (JSON, bukan angka statis) |
+| `GET` | `/stream/snapshot/cs` | Snapshot Compressive Sensing — payload CS didekripsi dari Pi lalu direkonstruksi (OMP+DCT) via service `cs-reconstruct`, dibalas sebagai JPEG |
+| `GET` | `/stream/cs-stats` | Statistik ukuran byte payload CS vs hasil rekonstruksi (data empiris) |
+| `POST` | `/analyze` | Analisis faringitis on-demand (DenseNet121), body = bytes JPEG |
 
 ---
 
@@ -288,3 +292,18 @@ Frontend **tidak perlu perubahan** — menerima data plaintext dari backend via 
 3. Restart backend
 
 > **Catatan Hardware:** Raspberry Pi 4 (BCM2711) tidak punya hardware AES accelerator — semua operasi AES software-only. Untuk data kecil (MQTT payload JSON), ini tidak menjadi bottleneck.
+
+Payload **Compressive Sensing** (`/stream/snapshot/cs`) juga dienkripsi dengan
+skema yang sama, tapi pakai format biner mentah (nonce+tag+ciphertext, bukan
+JSON/base64) supaya tidak menambah overhead ~33% di atas payload yang sudah
+diperkecil habis-habisan — overhead nyata cuma 28 byte/frame
+(`aesUtils.encryptRaw`/`decryptRaw` di `aesUtils.js`).
+
+## Update Pi Fisik
+
+Backend di repo ini sudah siap menerima payload CS terenkripsi dan
+`/stream/info`, tapi **Raspberry Pi fisik perlu diperbarui secara manual**
+(git pull + install `pycryptodome` + sinkronisasi `NISS_AES_KEY` + restart)
+sebelum fitur-fitur ini aktif end-to-end. Langkah lengkapnya ada di
+[`PI_UPDATE.md`](https://github.com/flakesss/devices_NISS/blob/main/PI_UPDATE.md)
+di repo `devices_NISS`.
