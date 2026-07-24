@@ -235,6 +235,8 @@ create table recordings (
   duration_sec numeric,
   cs_mr_percent    integer,  -- MR asli dipakai saat capture (cuma terisi kalau via "Foto via CS")
   cs_payload_bytes bigint,   -- ukuran payload CS asli (byte) saat capture
+  cs_psnr          numeric,  -- PSNR ASLI (dihitung di Pi vs frame sebelum kompresi)
+  cs_ssim          numeric,  -- SSIM ASLI (dihitung di Pi vs frame sebelum kompresi)
   created_at  timestamptz default now()
 );
 ```
@@ -245,7 +247,9 @@ jalankan migrasi ini:
 ```sql
 alter table recordings
   add column if not exists cs_mr_percent integer,
-  add column if not exists cs_payload_bytes bigint;
+  add column if not exists cs_payload_bytes bigint,
+  add column if not exists cs_psnr numeric,
+  add column if not exists cs_ssim numeric;
 ```
 
 ### Storage Bucket

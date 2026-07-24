@@ -130,6 +130,10 @@ mqttClient.on("message", (topic, payload) => {
               // Kompresi" bisa tahu MR ASLI yang dipakai saat capture, bukan menebak.
               cs_mr_percent: data.cs?.mrPercent ?? null,
               cs_payload_bytes: data.cs?.csPayloadBytes ?? null,
+              // PSNR/SSIM ASLI (dihitung di Pi terhadap frame sebelum kompresi,
+              // sesaat sebelum frame itu dibuang) -- bukan simulasi.
+              cs_psnr: data.cs?.psnr ?? null,
+              cs_ssim: data.cs?.ssim ?? null,
             })
             .then(({ error }) => {
               if (error) console.error("Gagal simpan ke DB:", error.message);
