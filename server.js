@@ -125,6 +125,11 @@ mqttClient.on("message", (topic, payload) => {
               type: data.event === "snapshot_taken" ? "foto" : "video",
               storage_path: data.storage_path,
               duration_sec: data.duration_sec ?? null,
+              // Metadata CS -- cuma terisi kalau foto diambil lewat toggle "Foto via CS"
+              // (lihat cs_info di mqtt_server.py:_do_snapshot), supaya panel "Info
+              // Kompresi" bisa tahu MR ASLI yang dipakai saat capture, bukan menebak.
+              cs_mr_percent: data.cs?.mrPercent ?? null,
+              cs_payload_bytes: data.cs?.csPayloadBytes ?? null,
             })
             .then(({ error }) => {
               if (error) console.error("Gagal simpan ke DB:", error.message);

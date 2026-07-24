@@ -233,8 +233,19 @@ create table recordings (
   type        text not null check (type in ('video', 'foto')),
   storage_path text,
   duration_sec numeric,
+  cs_mr_percent    integer,  -- MR asli dipakai saat capture (cuma terisi kalau via "Foto via CS")
+  cs_payload_bytes bigint,   -- ukuran payload CS asli (byte) saat capture
   created_at  timestamptz default now()
 );
+```
+
+Kalau tabel `recordings` sudah ada sebelumnya (dibuat sebelum fitur "Foto via CS"),
+jalankan migrasi ini:
+
+```sql
+alter table recordings
+  add column if not exists cs_mr_percent integer,
+  add column if not exists cs_payload_bytes bigint;
 ```
 
 ### Storage Bucket
