@@ -38,7 +38,7 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const SUPABASE_BUCKET = process.env.SUPABASE_BUCKET || "endoskop-media";
 
-const ALLOWED_COMMANDS = ["rekam", "stop", "foto"];
+const ALLOWED_COMMANDS = ["rekam", "stop", "foto", "set_cs_mr"];
 
 
 // ==========================
@@ -607,10 +607,11 @@ app.post("/cs-quality", express.raw({ type: "image/*", limit: "10mb" }), (req, r
   }
 
   const url = new URL(`${CS_RECONSTRUCT_URL}/cs-quality`);
+  if (req.query.mr) url.searchParams.set("mr", req.query.mr);
   const csReq = http.request({
     hostname: url.hostname,
     port: url.port || 80,
-    path: url.pathname,
+    path: url.pathname + url.search,
     method: "POST",
     headers: { "Content-Type": "application/octet-stream", "Content-Length": req.body.length },
   }, (csRes) => {
@@ -627,7 +628,7 @@ app.post("/cs-quality", express.raw({ type: "image/*", limit: "10mb" }), (req, r
 // Kirim perintah ke device (rekam / stop / foto)
 app.post("/devices/:id/command", (req, res) => {
   const { id } = req.params;
-  const { cmd } = req.body;
+  const { cmd, mr } = req.body;
 
   if (!ALLOWED_COMMANDS.includes(cmd)) {
     return res.status(400).json({
@@ -636,9 +637,18 @@ app.post("/devices/:id/command", (req, res) => {
     });
   }
 
+  const usesMr = cmd === "set_cs_mr" || (cmd === "foto" && mr !== undefined);
+  if (usesMr) {
+    const mrNum = Number(mr);
+    if (!Number.isInteger(mrNum) || mrNum < 10 || mrNum > 100) {
+      return res.status(400).json({ error: "mr harus bilangan bulat 10-100" });
+    }
+  }
+
   const topic = `endoskop/${id}/command`;
   // Enkripsi command sebelum publish — device akan mendekripsinya
-  const encPayload = aesUtils.encryptJson({ cmd });
+  const commandData = usesMr ? { cmd, mr: Number(mr) } : { cmd };
+  const encPayload = aesUtils.encryptJson(commandData);
   mqttClient.publish(topic, encPayload, { qos: 1 });
   console.log(`Mengirim perintah '${cmd}' ke ${id} (encrypted)`);
 
